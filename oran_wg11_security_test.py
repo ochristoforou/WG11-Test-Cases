@@ -220,6 +220,12 @@ class SecurityTestSuite:
                 def packet_handler(packet):
                     if packet.haslayer(TCP):
                         self.captured_packets.append(packet)
+                        # Debug: Log packet details
+                        src_port = packet[TCP].sport if packet.haslayer(TCP) else "unknown"
+                        dst_port = packet[TCP].dport if packet.haslayer(TCP) else "unknown"
+                        has_payload = packet.haslayer(scapy.Raw)
+                        payload_len = len(packet[scapy.Raw].load) if has_payload else 0
+                        self.logger.debug(f"Captured packet: {src_port}->{dst_port}, payload: {has_payload} ({payload_len} bytes)")
                 
                 scapy.sniff(
                     iface=self.config.capture_interface,
@@ -339,45 +345,95 @@ class SecurityTestSuite:
             channel = transport.open_session()
             
             # Send command that will generate predictable traffic
-            test_command = "echo 'INTEGRITY_TEST_DATA' && sleep 5"
+            test_command = "echo 'INTEGRITY_TEST_DATA_$(date)' && for i in {1..5}; do echo 'Line $i with test data'; sleep 1; done"
+            self.logger.info(f"Executing command to generate test traffic: {test_command}")
             channel.exec_command(test_command)
             
-            # Wait a bit for packets to be captured
-            time.sleep(3)
+            # Wait for command execution and packet capture
+            time.sleep(8)  # Increased time to capture more packets
             
-            # Simulate packet modification (this is conceptual - in practice,
-            # we would need to intercept and modify packets in real-time)
+            # Simulate packet modification and injection
             modified_packets_sent = 0
             integrity_violations_detected = 0
+            packets_with_payload = 0
+            modification_attempts = 0
             
             # Attempt to send modified packets to the SSH connection
             try:
-                # Get some captured packets to modify
-                if self.captured_packets:
-                    original_packet = self.captured_packets[-1]
-                    
-                    if original_packet.haslayer(scapy.Raw):
+                self.logger.info(f"Analyzing {len(self.captured_packets)} captured packets for modification...")
+                
+                # Look for packets with payload data
+                suitable_packets = []
+                for packet in self.captured_packets:
+                    if packet.haslayer(TCP) and packet.haslayer(IP):
+                        if packet.haslayer(scapy.Raw):
+                            packets_with_payload += 1
+                            payload = packet[scapy.Raw].load
+                            if len(payload) > 8:  # Only modify packets with sufficient payload
+                                suitable_packets.append(packet)
+                        elif len(packet[TCP].payload) > 0:
+                            # Some packets might have TCP payload without Raw layer
+                            packets_with_payload += 1
+                            suitable_packets.append(packet)
+                
+                self.logger.info(f"Found {packets_with_payload} packets with payload data")
+                self.logger.info(f"Found {len(suitable_packets)} suitable packets for modification")
+                
+                # Try to modify up to 3 different packets
+                for i, original_packet in enumerate(suitable_packets[:3]):
+                    modification_attempts += 1
+                    try:
                         # Create a modified version
                         modified_packet = original_packet.copy()
+                        
+                        # Method 1: Modify Raw payload if available
                         if modified_packet.haslayer(scapy.Raw):
-                            # Modify the payload
                             original_payload = modified_packet[scapy.Raw].load
                             modified_payload = bytearray(original_payload)
-                            if len(modified_payload) > 10:
-                                modified_payload[10] = (modified_payload[10] + 1) % 256
+                            if len(modified_payload) > 8:
+                                # Modify a byte in the middle of the payload
+                                mod_index = len(modified_payload) // 2
+                                modified_payload[mod_index] = (modified_payload[mod_index] + 1) % 256
                                 modified_packet[scapy.Raw].load = bytes(modified_payload)
                                 
-                                # Remove checksums to force recalculation
-                                del modified_packet[IP].chksum
-                                del modified_packet[TCP].chksum
-                                
-                                # Send modified packet
-                                scapy.send(modified_packet, verbose=False)
-                                modified_packets_sent += 1
-                                self.logger.info("Sent modified packet to test integrity detection")
+                                self.logger.debug(f"Modified Raw payload at index {mod_index}")
+                        
+                        # Method 2: If no Raw layer, try to inject some data
+                        else:
+                            # Add some modified data as Raw layer
+                            modified_data = b"MODIFIED_INTEGRITY_TEST_DATA"
+                            modified_packet = modified_packet / scapy.Raw(load=modified_data)
+                            self.logger.debug("Added Raw layer with modified data")
+                        
+                        # Remove checksums to force recalculation
+                        if modified_packet.haslayer(IP):
+                            del modified_packet[IP].chksum
+                        if modified_packet.haslayer(TCP):
+                            del modified_packet[TCP].chksum
+                        
+                        # Modify sequence number slightly to simulate in-flight modification
+                        if modified_packet.haslayer(TCP):
+                            original_seq = modified_packet[TCP].seq
+                            modified_packet[TCP].seq = (original_seq + 1) % (2**32)
+                        
+                        # Send modified packet
+                        scapy.send(modified_packet, verbose=False)
+                        modified_packets_sent += 1
+                        self.logger.info(f"Sent modified packet #{i+1} to test integrity detection")
+                        
+                        # Small delay between packets
+                        time.sleep(0.1)
+                        
+                    except Exception as packet_error:
+                        self.logger.debug(f"Could not modify packet #{i+1}: {packet_error}")
+                        continue
+                
+                if modified_packets_sent == 0:
+                    self.logger.warning("Could not generate any modified packets")
+                    self.logger.info(f"Packet analysis: {len(self.captured_packets)} total, {packets_with_payload} with payload, {modification_attempts} modification attempts")
             
             except Exception as e:
-                self.logger.warning(f"Could not send modified packets: {e}")
+                self.logger.warning(f"Error during packet modification: {e}")
             
             # Check channel status and SSH connection health
             channel_closed_unexpectedly = False
@@ -417,7 +473,9 @@ class SecurityTestSuite:
                 "integrity_violations_detected": integrity_violations_detected,
                 "channel_closed_unexpectedly": channel_closed_unexpectedly,
                 "ssh_connection_alive": ssh_connection_alive,
-                "total_packets_captured": len(self.captured_packets)
+                "total_packets_captured": len(self.captured_packets),
+                "packets_with_payload": packets_with_payload,
+                "modification_attempts": modification_attempts
             }
             
             result = TestResult(
