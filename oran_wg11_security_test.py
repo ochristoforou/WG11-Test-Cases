@@ -92,13 +92,14 @@ class SecurityTestSuite:
     
     def __init__(self, config: TestConfig):
         self.config = config
+        
+        # Create output directory first (needed for logging)
+        os.makedirs(config.output_dir, exist_ok=True)
+        
         self.logger = self._setup_logging()
         self.ssh_client = None
         self.captured_packets = []
         self.test_results = []
-        
-        # Create output directory
-        os.makedirs(config.output_dir, exist_ok=True)
     
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
