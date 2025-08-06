@@ -44,7 +44,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-class TestResult(Enum):
+class TestStatus(Enum):
     """Test result enumeration"""
     PASS = "PASS"
     FAIL = "FAIL"
@@ -63,6 +63,7 @@ class TestConfig:
     ssh_private_key_path: Optional[str] = None
     ssh_public_key_path: Optional[str] = None
     ssh_certificate_path: Optional[str] = None
+    ssh_private_key_passphrase: Optional[str] = None
     ssh_username: str = "root"
     ssh_password: Optional[str] = None
     
@@ -81,7 +82,7 @@ class TestConfig:
 class TestResult:
     """Test result data structure"""
     test_name: str
-    status: TestResult
+    status: TestStatus
     details: str
     timestamp: str
     evidence: Dict[str, Any]
@@ -134,14 +135,29 @@ class SecurityTestSuite:
             raise ValueError("SSH private key path is required")
         
         try:
-            # Try different key types
+            # Try different key types with optional passphrase
+            passphrase = self.config.ssh_private_key_passphrase
+            
             for key_class in [paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key]:
                 try:
-                    return key_class.from_private_key_file(self.config.ssh_private_key_path)
+                    if passphrase:
+                        return key_class.from_private_key_file(
+                            self.config.ssh_private_key_path, 
+                            password=passphrase
+                        )
+                    else:
+                        return key_class.from_private_key_file(self.config.ssh_private_key_path)
+                except paramiko.PasswordRequiredException:
+                    if not passphrase:
+                        self.logger.error("Private key requires passphrase but none provided in config")
+                        raise ValueError("Private key requires passphrase. Please add 'ssh_private_key_passphrase' to config.")
+                    else:
+                        # Wrong passphrase for this key type, try next
+                        continue
                 except paramiko.SSHException:
                     continue
             
-            raise paramiko.SSHException("Unable to load private key")
+            raise paramiko.SSHException("Unable to load private key with provided credentials")
             
         except Exception as e:
             self.logger.error(f"Failed to load SSH key: {e}")
@@ -266,13 +282,13 @@ class SecurityTestSuite:
             
             # Determine result
             if plaintext_found:
-                status = TestResult.FAIL
+                status = TestStatus.FAIL
                 details = f"FAIL: Sensitive data found in plaintext. Test string '{test_string}' was transmitted unencrypted."
             elif encrypted_packets > 0:
-                status = TestResult.PASS
+                status = TestStatus.PASS
                 details = f"PASS: All data appears to be encrypted. Captured {encrypted_packets} encrypted packets, no plaintext data found."
             else:
-                status = TestResult.ERROR
+                status = TestStatus.ERROR
                 details = "ERROR: No relevant packets captured for analysis."
             
             evidence = {
@@ -299,7 +315,7 @@ class SecurityTestSuite:
         except Exception as e:
             error_result = TestResult(
                 test_name="Confidentiality Verification",
-                status=TestResult.ERROR,
+                status=TestStatus.ERROR,
                 details=f"ERROR: Test failed with exception: {str(e)}",
                 timestamp=datetime.now().isoformat(),
                 evidence={"error": str(e)}
@@ -386,14 +402,14 @@ class SecurityTestSuite:
             
             # Analyze results
             if modified_packets_sent > 0 and (channel_closed_unexpectedly or not ssh_connection_alive):
-                status = TestResult.PASS
+                status = TestStatus.PASS
                 details = "PASS: SSH connection detected and rejected modified packets, demonstrating integrity protection."
                 integrity_violations_detected = 1
             elif modified_packets_sent > 0:
-                status = TestResult.FAIL
+                status = TestStatus.FAIL
                 details = "FAIL: Modified packets were not detected/rejected by the SSH connection."
             else:
-                status = TestResult.ERROR
+                status = TestStatus.ERROR
                 details = "ERROR: Could not generate modified packets for testing."
             
             evidence = {
@@ -420,7 +436,7 @@ class SecurityTestSuite:
         except Exception as e:
             error_result = TestResult(
                 test_name="Integrity Protection Verification",
-                status=TestResult.ERROR,
+                status=TestStatus.ERROR,
                 details=f"ERROR: Test failed with exception: {str(e)}",
                 timestamp=datetime.now().isoformat(),
                 evidence={"error": str(e)}
@@ -453,7 +469,7 @@ class SecurityTestSuite:
             if not packets_to_replay:
                 return TestResult(
                     test_name="Replay Protection Verification",
-                    status=TestResult.ERROR,
+                    status=TestStatus.ERROR,
                     details="ERROR: No TCP packets captured for replay testing.",
                     timestamp=datetime.now().isoformat(),
                     evidence={"packets_captured": len(self.captured_packets)}
@@ -511,17 +527,17 @@ class SecurityTestSuite:
             
             # Analyze results
             if replayed_packets > 0 and not ssh_connection_alive:
-                status = TestResult.PASS
+                status = TestStatus.PASS
                 details = "PASS: SSH connection detected and rejected replayed packets, demonstrating replay protection."
             elif replayed_packets > 0 and ssh_connection_alive:
                 # Additional check: if connection is alive, replayed packets should be ignored
-                status = TestResult.PASS
+                status = TestStatus.PASS
                 details = "PASS: Replayed packets were ignored by SSH connection, demonstrating replay protection."
             elif replayed_packets == 0:
-                status = TestResult.ERROR
+                status = TestStatus.ERROR
                 details = "ERROR: Could not replay packets for testing."
             else:
-                status = TestResult.FAIL
+                status = TestStatus.FAIL
                 details = "FAIL: Replay protection appears ineffective."
             
             evidence = {
@@ -548,7 +564,7 @@ class SecurityTestSuite:
         except Exception as e:
             error_result = TestResult(
                 test_name="Replay Protection Verification",
-                status=TestResult.ERROR,
+                status=TestStatus.ERROR,
                 details=f"ERROR: Test failed with exception: {str(e)}",
                 timestamp=datetime.now().isoformat(),
                 evidence={"error": str(e)}
@@ -566,7 +582,7 @@ class SecurityTestSuite:
             if not self.establish_ssh_connection():
                 error_result = TestResult(
                     test_name="SSH Connection",
-                    status=TestResult.ERROR,
+                    status=TestStatus.ERROR,
                     details="ERROR: Failed to establish SSH connection to target",
                     timestamp=datetime.now().isoformat(),
                     evidence={}
@@ -601,9 +617,9 @@ class SecurityTestSuite:
             "-" * 30
         ]
         
-        pass_count = sum(1 for r in self.test_results if r.status == TestResult.PASS)
-        fail_count = sum(1 for r in self.test_results if r.status == TestResult.FAIL)
-        error_count = sum(1 for r in self.test_results if r.status == TestResult.ERROR)
+        pass_count = sum(1 for r in self.test_results if r.status == TestStatus.PASS)
+        fail_count = sum(1 for r in self.test_results if r.status == TestStatus.FAIL)
+        error_count = sum(1 for r in self.test_results if r.status == TestStatus.ERROR)
         
         report_lines.extend([
             f"PASS: {pass_count}",
@@ -715,9 +731,9 @@ def main():
     print("\n" + report)
     
     # Exit with appropriate code
-    if any(r.status == TestResult.FAIL for r in results):
+    if any(r.status == TestStatus.FAIL for r in results):
         sys.exit(1)
-    elif any(r.status == TestResult.ERROR for r in results):
+    elif any(r.status == TestStatus.ERROR for r in results):
         sys.exit(2)
     else:
         sys.exit(0)

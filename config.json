@@ -4,6 +4,7 @@
     "ssh_private_key_path": "/path/to/your/private_key.pem",
     "ssh_public_key_path": "/path/to/your/public_key.pub",
     "ssh_certificate_path": "/path/to/your/certificate.crt",
+    "ssh_private_key_passphrase": null,
     "ssh_username": "root",
     "ssh_password": null,
     "test_data_size": 1024,
