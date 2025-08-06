@@ -1,0 +1,15 @@
+{
+    "target_host": "192.168.1.100",
+    "target_port": 22,
+    "ssh_private_key_path": "/path/to/your/private_key.pem",
+    "ssh_public_key_path": "/path/to/your/public_key.pub",
+    "ssh_certificate_path": "/path/to/your/certificate.crt",
+    "ssh_username": "root",
+    "ssh_password": null,
+    "test_data_size": 1024,
+    "capture_interface": "eth0",
+    "capture_timeout": 30,
+    "replay_delay": 1.0,
+    "output_dir": "./test_results",
+    "log_level": "INFO"
+} 
