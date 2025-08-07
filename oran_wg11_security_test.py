@@ -141,12 +141,19 @@ class SecurityTestSuite:
             for key_class in [paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key]:
                 try:
                     if passphrase:
-                        return key_class.from_private_key_file(
+                        key = key_class.from_private_key_file(
                             self.config.ssh_private_key_path, 
                             password=passphrase
                         )
                     else:
-                        return key_class.from_private_key_file(self.config.ssh_private_key_path)
+                        key = key_class.from_private_key_file(self.config.ssh_private_key_path)
+                    
+                    # Log key information for debugging
+                    key_type = key_class.__name__
+                    key_fingerprint = key.get_fingerprint().hex()
+                    self.logger.info(f"Successfully loaded {key_type} key with fingerprint: {key_fingerprint}")
+                    return key
+                    
                 except paramiko.PasswordRequiredException:
                     if not passphrase:
                         self.logger.error("Private key requires passphrase but none provided in config")
