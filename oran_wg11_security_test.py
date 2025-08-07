@@ -226,20 +226,11 @@ class SecurityTestSuite:
             
             if self.config.ssh_private_key_path:
                 try:
-                    # First try to load the SSH certificate if available
-                    if self.config.ssh_certificate_path:
-                        pkey = self._load_ssh_certificate()
-                        if pkey:
-                            self.logger.info("Using SSH certificate authentication")
-                        else:
-                            # Fall back to private key
-                            pkey = self._load_ssh_key()
-                            self.logger.info("Using key-based authentication")
-                    else:
-                        pkey = self._load_ssh_key()
-                        self.logger.info("Using key-based authentication")
+                    # Use the private key directly (not the certificate)
+                    pkey = self._load_ssh_key()
+                    self.logger.info("Using key-based authentication")
                 except Exception as key_error:
-                    self.logger.error(f"Failed to load SSH key/certificate: {key_error}")
+                    self.logger.error(f"Failed to load SSH key: {key_error}")
                     return False
             elif self.config.ssh_password:
                 password = self.config.ssh_password
@@ -264,7 +255,17 @@ class SecurityTestSuite:
             if password:
                 connect_params['password'] = password
             
+            # Connect first
             self.ssh_client.connect(**connect_params)
+            
+            # Configure the transport to use newer RSA signature algorithms
+            transport = self.ssh_client.get_transport()
+            if transport:
+                # Force the use of newer RSA algorithms
+                transport.set_algorithm_preference('server_host_key_algorithms', 
+                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
+                transport.set_algorithm_preference('pubkeys', 
+                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
             
             self.logger.info("SSH connection established successfully")
             return True
