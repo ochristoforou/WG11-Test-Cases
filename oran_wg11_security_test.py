@@ -189,13 +189,17 @@ class SecurityTestSuite:
             password = None
             
             if self.config.ssh_private_key_path:
-                pkey = self._load_ssh_key()
-                self.logger.info("Using key-based authentication")
+                try:
+                    pkey = self._load_ssh_key()
+                    self.logger.info("Using key-based authentication")
+                except Exception as key_error:
+                    self.logger.error(f"Failed to load SSH key: {key_error}")
+                    return False
             elif self.config.ssh_password:
                 password = self.config.ssh_password
                 self.logger.info("Using password-based authentication")
             else:
-                self.logger.error("No authentication method provided. Please specify either ssh_private_key_path or ssh_password")
+                self.logger.error("No authentication method provided")
                 return False
             
             # Build connection parameters
@@ -221,10 +225,6 @@ class SecurityTestSuite:
             
         except paramiko.AuthenticationException as auth_error:
             self.logger.error(f"SSH authentication failed: {auth_error}")
-            self.logger.error("Please check:")
-            self.logger.error("1. Private key path and passphrase are correct")
-            self.logger.error("2. Username is correct")
-            self.logger.error("3. Key is authorized on the target system")
             return False
         except paramiko.SSHException as ssh_error:
             self.logger.error(f"SSH connection failed: {ssh_error}")
