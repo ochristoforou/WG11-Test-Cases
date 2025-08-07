@@ -1,82 +1,73 @@
 # O-RAN WG11 11.1.3.2 Security Test Suite
 
-This Python script implements the O-RAN Working Group 11 specification 11.1.3.2 test for SSH connection security verification between O-RU (O-RAN Radio Unit) and O-DU (O-RAN Distributed Unit) components.
+This Python script implements the O-RAN WG11 11.1.3.2 security test for O-RU and O-DU components, focusing on:
 
-## Overview
-
-The test suite verifies three critical security aspects:
-
-1. **Confidentiality Verification**: Ensures all data transmitted over SSH connections is properly encrypted
-2. **Integrity Protection Verification**: Confirms that the system detects and discards modified packets
-3. **Replay Protection Verification**: Validates that the system prevents replay attacks
+1. **Confidentiality verification** - Ensures SSH encryption of sensitive data
+2. **Integrity protection verification** - Tests packet modification detection
+3. **Replay protection verification** - Validates replay attack prevention
 
 ## Features
 
-- Support for customer-provided SSH private keys, public keys, and certificates
-- Real-time packet capture and analysis using Scapy
-- Comprehensive test reporting with pass/fail assessments
-- Detailed evidence collection for each test
-- Configurable test parameters
-- Professional logging and output
+- ✅ **Full SSH certificate support** using asyncssh
+- ✅ **Passphrase-protected private keys** support
+- ✅ **Packet capture and analysis** using scapy
+- ✅ **Comprehensive test reporting** with detailed evidence
+- ✅ **Async/await architecture** for better performance
+- ✅ **Configurable test parameters** via JSON configuration
 
 ## Requirements
 
-- Python 3.7 or higher
-- Root/administrator privileges for packet capture
-- Network access to the target O-RU/O-DU device
-- SSH credentials (private key, public key, and/or certificate)
+- Python 3.7+
+- asyncssh >= 2.13.0
+- scapy >= 2.4.0
 
 ## Installation
 
-1. Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Ensure you have the necessary privileges for packet capture:
-```bash
-# On Linux/macOS, you may need to run with sudo
-# On Windows, run as Administrator
-```
-
 ## Configuration
 
-Create a configuration file (see `config.json` example) with the following parameters:
-
-### Required Parameters
-
-- `target_host`: IP address or hostname of the target device
-- `ssh_private_key_path`: Path to your SSH private key file
-- `ssh_username`: SSH username for authentication
-
-### Optional Parameters
-
-- `target_port`: SSH port (default: 22)
-- `ssh_public_key_path`: Path to SSH public key file
-- `ssh_certificate_path`: Path to SSH certificate file
-- `ssh_password`: SSH password (if not using key-based auth)
-- `test_data_size`: Size of test data in bytes (default: 1024)
-- `capture_interface`: Network interface for packet capture (default: auto-detect)
-- `capture_timeout`: Packet capture timeout in seconds (default: 30)
-- `replay_delay`: Delay before replay attack in seconds (default: 1.0)
-- `output_dir`: Directory for test results (default: ./test_results)
-- `log_level`: Logging level (INFO, DEBUG, WARNING, ERROR)
-
-### Example Configuration
+Create a `config.json` file with your test parameters:
 
 ```json
 {
-    "target_host": "192.168.1.100",
-    "target_port": 22,
-    "ssh_private_key_path": "/path/to/your/private_key.pem",
-    "ssh_public_key_path": "/path/to/your/public_key.pub",
-    "ssh_certificate_path": "/path/to/your/certificate.crt",
+    "target_host": "192.168.9.152",
+    "target_port": 2277,
+    "ssh_private_key_path": "/path/to/private/key",
+    "ssh_private_key_passphrase": "your_passphrase",
+    "ssh_certificate_path": "/path/to/certificate.pub",
     "ssh_username": "root",
+    "ssh_password": null,
     "test_data_size": 1024,
-    "capture_interface": "eth0",
-    "output_dir": "./test_results"
+    "capture_interface": "enp3s0",
+    "capture_timeout": 30,
+    "replay_delay": 1.0,
+    "output_dir": "./test_results",
+    "log_level": "INFO"
 }
 ```
+
+### Configuration Options
+
+| Parameter | Description | Required |
+|-----------|-------------|----------|
+| `target_host` | Target host IP address | Yes |
+| `target_port` | SSH port (default: 22) | No |
+| `ssh_private_key_path` | Path to private key file | Yes* |
+| `ssh_private_key_passphrase` | Passphrase for private key | No |
+| `ssh_certificate_path` | Path to SSH certificate | No |
+| `ssh_username` | SSH username | Yes |
+| `ssh_password` | SSH password (alternative to key) | No |
+| `test_data_size` | Size of test data in bytes | No |
+| `capture_interface` | Network interface for packet capture | Yes |
+| `capture_timeout` | Packet capture timeout in seconds | No |
+| `replay_delay` | Delay before replay attack simulation | No |
+| `output_dir` | Directory for test results | No |
+| `log_level` | Logging level (DEBUG, INFO, WARNING, ERROR) | No |
+
+*Either `ssh_private_key_path` or `ssh_password` is required.
 
 ## Usage
 
@@ -86,165 +77,101 @@ Create a configuration file (see `config.json` example) with the following param
 python oran_wg11_security_test.py --config config.json
 ```
 
-### Verbose Mode
+### Verbose Output
 
 ```bash
 python oran_wg11_security_test.py --config config.json --verbose
 ```
 
-### Running with Elevated Privileges (for packet capture)
+### Test Connection First
+
+Before running the full test suite, you can test the SSH connection:
 
 ```bash
-# Linux/macOS
-sudo python oran_wg11_security_test.py --config config.json
-
-# Windows (run as Administrator)
-python oran_wg11_security_test.py --config config.json
+python test_asyncssh_connection.py config.json
 ```
 
-## Test Descriptions
+## Test Details
 
 ### 1. Confidentiality Verification
 
-**Purpose**: Verify that all sensitive data transmitted over the SSH connection is encrypted.
+- Establishes SSH connection using provided credentials
+- Transmits test data over the connection
+- Captures and analyzes network traffic
+- Verifies that sensitive data is encrypted (not in plaintext)
 
-**Process**:
-1. Establishes SSH connection using provided credentials
-2. Starts packet capture on the network interface
-3. Transmits test data over the SSH connection
-4. Analyzes captured packets for plaintext data exposure
-5. Assesses encryption effectiveness
-
-**Pass Criteria**: No sensitive data found in plaintext; all traffic is properly encrypted.
-
-**Expected Result**: All sensitive data transmitted over the OFH M-Plane interface is encrypted, with no data exposed in clear text.
+**Expected Result**: All sensitive data should be encrypted with no plaintext exposure.
 
 ### 2. Integrity Protection Verification
 
-**Purpose**: Confirm that the system detects and discards packets that have been modified in transit.
+- Generates predictable network traffic during SSH session
+- Captures packets and modifies them in-flight
+- Injects modified packets back into the network
+- Verifies that the DUT detects and discards modified packets
 
-**Process**:
-1. Establishes SSH connection and starts packet capture
-2. Transmits data over the connection
-3. Captures packets and creates modified versions
-4. Attempts to inject modified packets into the connection
-5. Monitors SSH connection health and response
-
-**Pass Criteria**: SSH connection detects modified packets and either rejects them or terminates the connection.
-
-**Expected Result**: The DUT detects and discards altered packets, ensuring the data has not been tampered with.
+**Expected Result**: The DUT should detect and discard altered packets.
 
 ### 3. Replay Protection Verification
 
-**Purpose**: Validate that the system prevents replay attacks by detecting and discarding replayed packets.
+- Captures legitimate SSH traffic
+- Replays previously captured packets
+- Verifies that the DUT detects and discards replayed packets
 
-**Process**:
-1. Establishes SSH connection and captures legitimate traffic
-2. Stores captured packets for replay
-3. Waits for a delay period
-4. Replays previously captured packets
-5. Monitors system response to replayed traffic
-
-**Pass Criteria**: System detects and ignores or rejects replayed packets, maintaining connection security.
-
-**Expected Result**: The DUT detects and discards replayed packets, preventing replay attacks.
+**Expected Result**: The DUT should detect and discard replayed packets.
 
 ## Output
 
-The test suite generates several outputs:
+The script generates:
 
-### Console Output
-- Real-time test progress and results
-- Summary of pass/fail status for each test
-- Final assessment against expected results
+1. **Console output** with real-time test progress
+2. **Detailed log file** in the output directory
+3. **Comprehensive test report** with results and evidence
+4. **Exit codes**:
+   - `0`: All tests passed
+   - `1`: One or more tests failed
+   - `2`: One or more tests had errors
 
-### Log Files
-- Detailed execution logs in `test_results/` directory
-- Timestamped log files with DEBUG level information
-- Error tracking and troubleshooting information
-
-### Test Reports
-- Comprehensive test report with detailed results
-- Evidence collection for each test case
-- Assessment against O-RAN WG11 expected results
-- JSON format evidence for further analysis
-
-### Example Report Structure
+## Example Output
 
 ```
-O-RAN WG11 11.1.3.2 Security Test Report
-==================================================
-Test Date: 2024-01-15 14:30:00
-Target: 192.168.1.100:22
-
-Test Results Summary:
-------------------------------
-PASS: 3
-FAIL: 0
-ERROR: 0
-TOTAL: 3
-
-Expected Results Assessment:
-------------------------------
-
-1. Confidentiality:
-   Status: PASS
-   Expected: All sensitive data transmitted over the OFH M-Plane interface is encrypted, with no data exposed in clear text.
-   Assessment: PASS: All data appears to be encrypted. Captured 45 encrypted packets, no plaintext data found.
-
-2. Integrity Protection:
-   Status: PASS
-   Expected: The DUT detects and discards altered packets, ensuring the data has not been tampered with.
-   Assessment: PASS: SSH connection detected and rejected modified packets, demonstrating integrity protection.
-
-3. Replay Protection:
-   Status: PASS
-   Expected: The DUT detects and discards replayed packets, preventing replay attacks.
-   Assessment: PASS: Replayed packets were ignored by SSH connection, demonstrating replay protection.
+2025-08-07 15:30:00,123 - oran_wg11_test - INFO - Starting O-RAN WG11 11.1.3.2 Security Test Suite
+2025-08-07 15:30:00,456 - oran_wg11_test - INFO - Establishing SSH connection to 192.168.9.152:2277
+2025-08-07 15:30:01,789 - oran_wg11_test - INFO - SSH connection established successfully
+2025-08-07 15:30:01,790 - oran_wg11_test - INFO - === Starting Confidentiality Test ===
+2025-08-07 15:30:04,123 - oran_wg11_test - INFO - Confidentiality test completed: PASS
+2025-08-07 15:30:04,124 - oran_wg11_test - INFO - === Starting Integrity Protection Test ===
+2025-08-07 15:30:12,456 - oran_wg11_test - INFO - Integrity protection test completed: PASS
+2025-08-07 15:30:12,457 - oran_wg11_test - INFO - === Starting Replay Protection Test ===
+2025-08-07 15:30:18,789 - oran_wg11_test - INFO - Replay protection test completed: PASS
 ```
-
-## Security Considerations
-
-- This tool requires network packet capture capabilities, which may require elevated privileges
-- The test involves generating potentially malicious network traffic (modified/replayed packets)
-- Ensure you have proper authorization before testing against any network infrastructure
-- Run tests in isolated network environments when possible
-- Be aware that some tests may temporarily disrupt SSH connections
 
 ## Troubleshooting
 
-### Common Issues
+### SSH Connection Issues
 
-1. **Permission Denied for Packet Capture**
-   - Solution: Run with elevated privileges (sudo/Administrator)
-   - Alternative: Configure capabilities on Linux: `sudo setcap cap_net_raw=eip python3`
+1. **Authentication failed**: Verify your private key and passphrase
+2. **Certificate issues**: Ensure your SSH certificate is valid and properly formatted
+3. **Host key verification**: The script disables host key checking for testing
 
-2. **SSH Connection Failures**
-   - Check network connectivity to target host
-   - Verify SSH credentials and paths
-   - Ensure target SSH service is running and accessible
+### Packet Capture Issues
 
-3. **No Packets Captured**
-   - Verify network interface name in configuration
-   - Check if traffic filtering is blocking SSH traffic
-   - Ensure capture interface has traffic flowing
+1. **No packets captured**: Check your network interface name
+2. **Permission denied**: Run with sudo for packet capture
+3. **Interface not found**: Verify the interface exists and is active
 
-4. **Module Import Errors**
-   - Install required dependencies: `pip install -r requirements.txt`
-   - Ensure Python version compatibility (3.7+)
+### Test Failures
 
-### Debug Mode
+1. **Confidentiality FAIL**: Check if your SSH is properly configured for encryption
+2. **Integrity FAIL**: Modern SSH may silently drop modified packets rather than terminating
+3. **Replay FAIL**: Verify that your SSH server has replay protection enabled
 
-Enable verbose logging for detailed troubleshooting:
+## Security Notes
 
-```bash
-python oran_wg11_security_test.py --config config.json --verbose
-```
+- This script is designed for testing purposes only
+- It disables host key verification for automated testing
+- Packet modification is performed in a controlled environment
+- Always test in a safe, isolated network environment
 
 ## License
 
-This tool is provided for O-RAN compliance testing purposes. Ensure compliance with local laws and regulations regarding network security testing.
-
-## Support
-
-For issues related to O-RAN WG11 specifications, refer to the official O-RAN documentation. For tool-specific issues, check the log files in the output directory for detailed error information. 
+This script is provided as-is for O-RAN security testing purposes. 

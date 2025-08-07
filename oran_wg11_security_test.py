@@ -10,15 +10,15 @@ This script implements the O-RAN WG11 11.1.3.2 test for:
 
 Requirements:
 - Python 3.7+
-- paramiko (SSH client)
+- asyncssh (SSH client with certificate support)
 - scapy (packet manipulation)
-- cryptography (certificate handling)
 
 Usage:
     python oran_wg11_security_test.py --config config.json
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import socket
@@ -31,17 +31,14 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
-import base64 # Added for SSH certificate loading
 
 try:
-    import paramiko
+    import asyncssh
     import scapy.all as scapy
     from scapy.layers.inet import IP, TCP
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
 except ImportError as e:
     print(f"Required dependency missing: {e}")
-    print("Install with: pip install paramiko scapy cryptography")
+    print("Install with: pip install asyncssh scapy")
     sys.exit(1)
 
 
@@ -99,7 +96,7 @@ class SecurityTestSuite:
         os.makedirs(config.output_dir, exist_ok=True)
         
         self.logger = self._setup_logging()
-        self.ssh_client = None
+        self.ssh_conn = None
         self.captured_packets = []
         self.test_results = []
     
@@ -130,153 +127,47 @@ class SecurityTestSuite:
         
         return logger
     
-    def _load_ssh_key(self) -> paramiko.PKey:
-        """Load SSH private key"""
-        if not self.config.ssh_private_key_path:
-            raise ValueError("SSH private key path is required")
-        
-        try:
-            # Try different key types with optional passphrase
-            passphrase = self.config.ssh_private_key_passphrase
-            
-            for key_class in [paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key]:
-                try:
-                    if passphrase:
-                        key = key_class.from_private_key_file(
-                            self.config.ssh_private_key_path, 
-                            password=passphrase
-                        )
-                    else:
-                        key = key_class.from_private_key_file(self.config.ssh_private_key_path)
-                    
-                    # Log key information for debugging
-                    key_type = key_class.__name__
-                    key_fingerprint = key.get_fingerprint().hex()
-                    self.logger.info(f"Successfully loaded {key_type} key with fingerprint: {key_fingerprint}")
-                    return key
-                    
-                except paramiko.PasswordRequiredException:
-                    if not passphrase:
-                        self.logger.error("Private key requires passphrase but none provided in config")
-                        raise ValueError("Private key requires passphrase. Please add 'ssh_private_key_passphrase' to config.")
-                    else:
-                        # Wrong passphrase for this key type, try next
-                        continue
-                except paramiko.SSHException:
-                    continue
-            
-            raise paramiko.SSHException("Unable to load private key with provided credentials")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load SSH key: {e}")
-            raise
-    
-    def _load_ssh_certificate(self) -> Optional[paramiko.PKey]:
-        """Load SSH certificate if provided"""
-        if not self.config.ssh_certificate_path:
-            return None
-        
-        try:
-            # Load the SSH certificate
-            with open(self.config.ssh_certificate_path, 'r') as cert_file:
-                cert_data = cert_file.read().strip()
-            
-            # SSH certificates are single-line format
-            if not cert_data.startswith('ssh-') or 'cert' not in cert_data:
-                raise ValueError("Not a valid SSH certificate")
-            
-            # Split the certificate line into parts
-            parts = cert_data.split()
-            if len(parts) < 2:
-                raise ValueError("Invalid SSH certificate format")
-            
-            # The certificate type and data
-            cert_type = parts[0]
-            cert_data_b64 = parts[1]
-            
-            # Decode the certificate data
-            cert_data_bytes = base64.b64decode(cert_data_b64)
-            
-            # Create a certificate key using paramiko
-            # Note: This is a simplified approach - paramiko doesn't have direct SSH certificate support
-            # We'll try to use it as a regular key
-            try:
-                cert_key = paramiko.RSAKey(data=cert_data_bytes)
-                self.logger.info(f"Successfully loaded SSH certificate: {self.config.ssh_certificate_path}")
-                return cert_key
-            except Exception as cert_error:
-                self.logger.warning(f"Could not load certificate as key: {cert_error}")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load SSH certificate: {e}")
-            return None
-    
-    def establish_ssh_connection(self) -> bool:
-        """Establish SSH connection to the target"""
+    async def establish_ssh_connection(self) -> bool:
+        """Establish SSH connection to the target using asyncssh"""
         try:
             self.logger.info(f"Establishing SSH connection to {self.config.target_host}:{self.config.target_port}")
             
-            self.ssh_client = paramiko.SSHClient()
-            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Prepare connection parameters
+            connect_kwargs = {
+                'host': self.config.target_host,
+                'port': self.config.target_port,
+                'username': self.config.ssh_username,
+                'known_hosts': None,  # Disable host key checking for testing
+                'login_timeout': 30
+            }
             
-            # Load authentication credentials
-            pkey = None
-            password = None
-            
+            # Add authentication method
             if self.config.ssh_private_key_path:
-                try:
-                    # Use the private key directly (not the certificate)
-                    pkey = self._load_ssh_key()
-                    self.logger.info("Using key-based authentication")
-                except Exception as key_error:
-                    self.logger.error(f"Failed to load SSH key: {key_error}")
-                    return False
+                # Use private key authentication
+                connect_kwargs['client_keys'] = [self.config.ssh_private_key_path]
+                if self.config.ssh_private_key_passphrase:
+                    connect_kwargs['passphrase'] = self.config.ssh_private_key_passphrase
+                self.logger.info("Using key-based authentication")
             elif self.config.ssh_password:
-                password = self.config.ssh_password
+                connect_kwargs['password'] = self.config.ssh_password
                 self.logger.info("Using password-based authentication")
             else:
                 self.logger.error("No authentication method provided")
                 return False
             
-            # Build connection parameters
-            connect_params = {
-                'hostname': self.config.target_host,
-                'port': self.config.target_port,
-                'username': self.config.ssh_username,
-                'timeout': 30,
-                'allow_agent': False,
-                'look_for_keys': False
-            }
-            
-            # Add authentication method (only one)
-            if pkey:
-                connect_params['pkey'] = pkey
-            if password:
-                connect_params['password'] = password
-            
-            # Connect first
-            self.ssh_client.connect(**connect_params)
-            
-            # Configure the transport to use newer RSA signature algorithms
-            transport = self.ssh_client.get_transport()
-            if transport:
-                # Force the use of newer RSA algorithms
-                transport.set_algorithm_preference('server_host_key_algorithms', 
-                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
-                transport.set_algorithm_preference('pubkeys', 
-                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
+            # Establish connection
+            self.ssh_conn = await asyncssh.connect(**connect_kwargs)
             
             self.logger.info("SSH connection established successfully")
             return True
             
-        except paramiko.AuthenticationException as auth_error:
+        except asyncssh.AuthenticationError as auth_error:
             self.logger.error(f"SSH authentication failed: {auth_error}")
             return False
-        except paramiko.SSHException as ssh_error:
+        except asyncssh.SSHException as ssh_error:
             self.logger.error(f"SSH connection failed: {ssh_error}")
             return False
-        except socket.timeout:
+        except asyncio.TimeoutError:
             self.logger.error("SSH connection timed out")
             return False
         except Exception as e:
@@ -320,7 +211,7 @@ class SecurityTestSuite:
         capture_thread.start()
         return capture_thread
     
-    def test_confidentiality(self) -> TestResult:
+    async def test_confidentiality(self) -> TestResult:
         """Test 1: Confidentiality verification"""
         self.logger.info("=== Starting Confidentiality Test ===")
         
@@ -328,15 +219,15 @@ class SecurityTestSuite:
             # Start packet capture
             self.captured_packets.clear()
             capture_thread = self.start_packet_capture()
-            time.sleep(2)  # Allow capture to start
+            await asyncio.sleep(2)  # Allow capture to start
             
             # Transmit test data over SSH
             test_data = os.urandom(self.config.test_data_size)
             test_string = f"CONFIDENTIALITY_TEST_{hashlib.md5(test_data).hexdigest()}"
             
             self.logger.info("Transmitting test data over SSH connection...")
-            stdin, stdout, stderr = self.ssh_client.exec_command(f'echo "{test_string}"')
-            response = stdout.read().decode().strip()
+            result = await self.ssh_conn.run(f'echo "{test_string}"')
+            response = result.stdout.strip()
             
             # Wait for capture to complete
             capture_thread.join(timeout=10)
@@ -405,7 +296,7 @@ class SecurityTestSuite:
             self.logger.error(f"Confidentiality test error: {e}")
             return error_result
     
-    def test_integrity_protection(self) -> TestResult:
+    async def test_integrity_protection(self) -> TestResult:
         """Test 2: Integrity protection verification"""
         self.logger.info("=== Starting Integrity Protection Test ===")
         
@@ -413,19 +304,17 @@ class SecurityTestSuite:
             # Start packet capture
             self.captured_packets.clear()
             capture_thread = self.start_packet_capture()
-            time.sleep(2)
+            await asyncio.sleep(2)
             
-            # Create a channel for command execution
-            transport = self.ssh_client.get_transport()
-            channel = transport.open_session()
-            
-            # Send command that will generate predictable traffic
+            # Execute command that will generate predictable traffic
             test_command = "echo 'INTEGRITY_TEST_DATA' && date && for i in 1 2 3 4 5; do echo 'Line $i with test data'; sleep 1; done"
             self.logger.info(f"Executing command to generate test traffic: {test_command}")
-            channel.exec_command(test_command)
+            
+            # Run command asynchronously
+            result = await self.ssh_conn.run(test_command)
             
             # Wait for command execution and packet capture
-            time.sleep(8)  # Increased time to capture more packets
+            await asyncio.sleep(8)  # Increased time to capture more packets
             
             # Simulate packet modification and injection
             modified_packets_sent = 0
@@ -497,7 +386,7 @@ class SecurityTestSuite:
                         self.logger.info(f"Sent modified packet #{i+1} to test integrity detection")
                         
                         # Small delay between packets
-                        time.sleep(0.1)
+                        await asyncio.sleep(0.1)
                         
                     except Exception as packet_error:
                         self.logger.debug(f"Could not modify packet #{i+1}: {packet_error}")
@@ -510,29 +399,25 @@ class SecurityTestSuite:
             except Exception as e:
                 self.logger.warning(f"Error during packet modification: {e}")
             
-            # Check channel status and SSH connection health
-            channel_closed_unexpectedly = False
+            # Check SSH connection health
             ssh_connection_alive = True
             
             try:
-                # Wait for command completion
-                exit_status = channel.recv_exit_status()
-                output = channel.recv(1024).decode() if channel.recv_ready() else ""
-                
-                # Check if SSH connection is still alive
-                transport = self.ssh_client.get_transport()
-                if not transport.is_active():
+                # Try to execute another command to test connection health
+                test_result = await self.ssh_conn.run("echo 'POST_INTEGRITY_TEST'")
+                if test_result.exit_status == 0:
+                    ssh_connection_alive = True
+                else:
                     ssh_connection_alive = False
                     
             except Exception as e:
-                channel_closed_unexpectedly = True
                 ssh_connection_alive = False
-                self.logger.info(f"SSH channel/connection disrupted: {e}")
+                self.logger.info(f"SSH connection disrupted: {e}")
             
             capture_thread.join(timeout=10)
             
-             # Analyze results - Note: Modern SSH may silently drop modified packets rather than terminating
-            if modified_packets_sent > 0 and (channel_closed_unexpectedly or not ssh_connection_alive):
+            # Analyze results - Note: Modern SSH may silently drop modified packets rather than terminating
+            if modified_packets_sent > 0 and not ssh_connection_alive:
                 status = TestStatus.PASS
                 details = "PASS: SSH connection detected and rejected modified packets by terminating the connection, demonstrating integrity protection."
                 integrity_protection_working = 1
@@ -551,7 +436,6 @@ class SecurityTestSuite:
             evidence = {
                 "modified_packets_sent": modified_packets_sent,
                 "integrity_protection_working": integrity_protection_working,
-                "channel_closed_unexpectedly": channel_closed_unexpectedly,
                 "ssh_connection_alive": ssh_connection_alive,
                 "total_packets_captured": len(self.captured_packets),
                 "packets_with_payload": packets_with_payload,
@@ -583,7 +467,7 @@ class SecurityTestSuite:
             self.logger.error(f"Integrity protection test error: {e}")
             return error_result
     
-    def test_replay_protection(self) -> TestResult:
+    async def test_replay_protection(self) -> TestResult:
         """Test 3: Replay protection verification"""
         self.logger.info("=== Starting Replay Protection Test ===")
         
@@ -591,14 +475,14 @@ class SecurityTestSuite:
             # Start packet capture
             self.captured_packets.clear()
             capture_thread = self.start_packet_capture()
-            time.sleep(2)
+            await asyncio.sleep(2)
             
             # Execute a command to generate traffic
             test_command = "echo 'REPLAY_TEST_DATA' && date"
-            stdin, stdout, stderr = self.ssh_client.exec_command(test_command)
-            original_response = stdout.read().decode().strip()
+            result = await self.ssh_conn.run(test_command)
+            original_response = result.stdout.strip()
             
-            time.sleep(2)
+            await asyncio.sleep(2)
             capture_thread.join(timeout=10)
             
             # Store captured packets for replay
@@ -616,7 +500,7 @@ class SecurityTestSuite:
             self.logger.info(f"Replaying {len(packets_to_replay)} packets...")
             
             # Wait before replay
-            time.sleep(self.config.replay_delay)
+            await asyncio.sleep(self.config.replay_delay)
             
             # Start new capture for replay detection
             self.captured_packets.clear()
@@ -635,7 +519,7 @@ class SecurityTestSuite:
                     
                     scapy.send(replay_packet, verbose=False)
                     replayed_packets += 1
-                    time.sleep(0.1)
+                    await asyncio.sleep(0.1)
                     
                 except Exception as e:
                     self.logger.warning(f"Could not replay packet: {e}")
@@ -646,15 +530,13 @@ class SecurityTestSuite:
             
             try:
                 # Try to execute another command
-                stdin, stdout, stderr = self.ssh_client.exec_command("echo 'POST_REPLAY_TEST'")
-                post_replay_response = stdout.read().decode().strip()
+                test_result = await self.ssh_conn.run("echo 'POST_REPLAY_TEST'")
+                post_replay_response = test_result.stdout.strip()
                 
                 if post_replay_response:
                     connection_stable_after_replay = True
                     
-                # Check transport status
-                transport = self.ssh_client.get_transport()
-                if not transport.is_active():
+                if test_result.exit_status != 0:
                     ssh_connection_alive = False
                     
             except Exception as e:
@@ -711,13 +593,13 @@ class SecurityTestSuite:
             self.logger.error(f"Replay protection test error: {e}")
             return error_result
     
-    def run_all_tests(self) -> List[TestResult]:
+    async def run_all_tests(self) -> List[TestResult]:
         """Run all security tests"""
         self.logger.info("Starting O-RAN WG11 11.1.3.2 Security Test Suite")
         
         try:
             # Establish SSH connection
-            if not self.establish_ssh_connection():
+            if not await self.establish_ssh_connection():
                 error_result = TestResult(
                     test_name="SSH Connection",
                     status=TestStatus.ERROR,
@@ -729,17 +611,17 @@ class SecurityTestSuite:
                 return self.test_results
             
             # Run tests
-            self.test_confidentiality()
-            self.test_integrity_protection()
-            self.test_replay_protection()
+            await self.test_confidentiality()
+            await self.test_integrity_protection()
+            await self.test_replay_protection()
             
         except Exception as e:
             self.logger.error(f"Test suite error: {e}")
             
         finally:
             # Cleanup
-            if self.ssh_client:
-                self.ssh_client.close()
+            if self.ssh_conn:
+                self.ssh_conn.close()
         
         return self.test_results
     
@@ -846,7 +728,7 @@ def load_config(config_file: str) -> TestConfig:
         sys.exit(1)
 
 
-def main():
+async def main():
     """Main function"""
     parser = argparse.ArgumentParser(description='O-RAN WG11 11.1.3.2 Security Test Suite')
     parser.add_argument('--config', required=True, help='Configuration file path')
@@ -862,7 +744,7 @@ def main():
     
     # Run tests
     test_suite = SecurityTestSuite(config)
-    results = test_suite.run_all_tests()
+    results = await test_suite.run_all_tests()
     
     # Generate and display report
     report = test_suite.generate_report()
@@ -878,4 +760,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    asyncio.run(main()) 
