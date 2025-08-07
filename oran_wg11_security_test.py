@@ -225,7 +225,17 @@ class SecurityTestSuite:
             if password:
                 connect_params['password'] = password
             
+            # Configure transport to use newer RSA algorithms
             self.ssh_client.connect(**connect_params)
+            
+            # Configure the transport to use newer RSA signature algorithms
+            transport = self.ssh_client.get_transport()
+            if transport:
+                # Add newer RSA algorithms to the preferred algorithms
+                transport.set_algorithm_preference('server_host_key_algorithms', 
+                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
+                transport.set_algorithm_preference('pubkeys', 
+                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
             
             self.logger.info("SSH connection established successfully")
             return True
