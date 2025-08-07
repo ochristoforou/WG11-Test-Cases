@@ -186,24 +186,52 @@ class SecurityTestSuite:
             
             # Load authentication credentials
             pkey = None
+            password = None
+            
             if self.config.ssh_private_key_path:
                 pkey = self._load_ssh_key()
+                self.logger.info("Using key-based authentication")
+            elif self.config.ssh_password:
+                password = self.config.ssh_password
+                self.logger.info("Using password-based authentication")
+            else:
+                self.logger.error("No authentication method provided. Please specify either ssh_private_key_path or ssh_password")
+                return False
             
-            # Connect
-            self.ssh_client.connect(
-                hostname=self.config.target_host,
-                port=self.config.target_port,
-                username=self.config.ssh_username,
-                password=self.config.ssh_password,
-                pkey=pkey,
-                timeout=30,
-                allow_agent=False,
-                look_for_keys=False
-            )
+            # Build connection parameters
+            connect_params = {
+                'hostname': self.config.target_host,
+                'port': self.config.target_port,
+                'username': self.config.ssh_username,
+                'timeout': 30,
+                'allow_agent': False,
+                'look_for_keys': False
+            }
+            
+            # Add authentication method (only one)
+            if pkey:
+                connect_params['pkey'] = pkey
+            if password:
+                connect_params['password'] = password
+            
+            self.ssh_client.connect(**connect_params)
             
             self.logger.info("SSH connection established successfully")
             return True
             
+        except paramiko.AuthenticationException as auth_error:
+            self.logger.error(f"SSH authentication failed: {auth_error}")
+            self.logger.error("Please check:")
+            self.logger.error("1. Private key path and passphrase are correct")
+            self.logger.error("2. Username is correct")
+            self.logger.error("3. Key is authorized on the target system")
+            return False
+        except paramiko.SSHException as ssh_error:
+            self.logger.error(f"SSH connection failed: {ssh_error}")
+            return False
+        except socket.timeout:
+            self.logger.error("SSH connection timed out")
+            return False
         except Exception as e:
             self.logger.error(f"Failed to establish SSH connection: {e}")
             return False
