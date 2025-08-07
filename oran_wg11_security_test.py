@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
+import base64 # Added for SSH certificate loading
 
 try:
     import paramiko
@@ -170,17 +171,35 @@ class SecurityTestSuite:
             self.logger.error(f"Failed to load SSH key: {e}")
             raise
     
-    def _load_certificate(self) -> Optional[x509.Certificate]:
-        """Load X.509 certificate if provided"""
+    def _load_ssh_certificate(self) -> Optional[paramiko.PKey]:
+        """Load SSH certificate if provided"""
         if not self.config.ssh_certificate_path:
             return None
         
         try:
-            with open(self.config.ssh_certificate_path, 'rb') as cert_file:
+            # Load the SSH certificate
+            with open(self.config.ssh_certificate_path, 'r') as cert_file:
                 cert_data = cert_file.read()
-                return x509.load_pem_x509_certificate(cert_data, default_backend())
+            
+            # Parse the SSH certificate
+            lines = cert_data.strip().split('\n')
+            if len(lines) < 2:
+                raise ValueError("Invalid SSH certificate format")
+            
+            # SSH certificates start with 'ssh-rsa-cert-v01@openssh.com' or similar
+            if not any(line.startswith('ssh-') and 'cert' in line for line in lines):
+                raise ValueError("Not a valid SSH certificate")
+            
+            # Load the certificate using paramiko
+            cert_key = paramiko.RSAKey(data=paramiko.py3compat.decodebytes(
+                base64.b64decode(lines[1])
+            ))
+            
+            self.logger.info(f"Successfully loaded SSH certificate: {self.config.ssh_certificate_path}")
+            return cert_key
+            
         except Exception as e:
-            self.logger.error(f"Failed to load certificate: {e}")
+            self.logger.error(f"Failed to load SSH certificate: {e}")
             return None
     
     def establish_ssh_connection(self) -> bool:
@@ -197,10 +216,20 @@ class SecurityTestSuite:
             
             if self.config.ssh_private_key_path:
                 try:
-                    pkey = self._load_ssh_key()
-                    self.logger.info("Using key-based authentication")
+                    # First try to load the SSH certificate if available
+                    if self.config.ssh_certificate_path:
+                        pkey = self._load_ssh_certificate()
+                        if pkey:
+                            self.logger.info("Using SSH certificate authentication")
+                        else:
+                            # Fall back to private key
+                            pkey = self._load_ssh_key()
+                            self.logger.info("Using key-based authentication")
+                    else:
+                        pkey = self._load_ssh_key()
+                        self.logger.info("Using key-based authentication")
                 except Exception as key_error:
-                    self.logger.error(f"Failed to load SSH key: {key_error}")
+                    self.logger.error(f"Failed to load SSH key/certificate: {key_error}")
                     return False
             elif self.config.ssh_password:
                 password = self.config.ssh_password
@@ -225,17 +254,7 @@ class SecurityTestSuite:
             if password:
                 connect_params['password'] = password
             
-            # Configure transport to use newer RSA algorithms
             self.ssh_client.connect(**connect_params)
-            
-            # Configure the transport to use newer RSA signature algorithms
-            transport = self.ssh_client.get_transport()
-            if transport:
-                # Add newer RSA algorithms to the preferred algorithms
-                transport.set_algorithm_preference('server_host_key_algorithms', 
-                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
-                transport.set_algorithm_preference('pubkeys', 
-                    ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'])
             
             self.logger.info("SSH connection established successfully")
             return True
