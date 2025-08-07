@@ -354,7 +354,7 @@ class SecurityTestSuite:
             
             # Simulate packet modification and injection
             modified_packets_sent = 0
-            integrity_violations_detected = 0
+            integrity_protection_working = 0
             packets_with_payload = 0
             modification_attempts = 0
             
@@ -456,16 +456,16 @@ class SecurityTestSuite:
             
             capture_thread.join(timeout=10)
             
-            # Analyze results - Note: Modern SSH may silently drop modified packets rather than terminating
+             # Analyze results - Note: Modern SSH may silently drop modified packets rather than terminating
             if modified_packets_sent > 0 and (channel_closed_unexpectedly or not ssh_connection_alive):
                 status = TestStatus.PASS
                 details = "PASS: SSH connection detected and rejected modified packets by terminating the connection, demonstrating integrity protection."
-                integrity_violations_detected = 1
+                integrity_protection_working = 1
             elif modified_packets_sent > 0 and ssh_connection_alive:
                 # Modern SSH implementations often silently drop modified packets rather than terminating
                 status = TestStatus.PASS
                 details = f"PASS: {modified_packets_sent} modified packets were sent to SSH connection. Connection remained stable, indicating SSH is likely detecting and silently dropping modified packets (modern SSH behavior)."
-                integrity_violations_detected = 1
+                integrity_protection_working = 1
             elif modified_packets_sent == 0:
                 status = TestStatus.ERROR
                 details = "ERROR: Could not generate modified packets for testing."
@@ -475,7 +475,7 @@ class SecurityTestSuite:
             
             evidence = {
                 "modified_packets_sent": modified_packets_sent,
-                "integrity_violations_detected": integrity_violations_detected,
+                "integrity_protection_working": integrity_protection_working,
                 "channel_closed_unexpectedly": channel_closed_unexpectedly,
                 "ssh_connection_alive": ssh_connection_alive,
                 "total_packets_captured": len(self.captured_packets),
@@ -567,7 +567,7 @@ class SecurityTestSuite:
             
             # Check SSH connection health after replay
             ssh_connection_alive = True
-            replay_responses_received = 0
+            connection_stable_after_replay = False
             
             try:
                 # Try to execute another command
@@ -575,7 +575,7 @@ class SecurityTestSuite:
                 post_replay_response = stdout.read().decode().strip()
                 
                 if post_replay_response:
-                    replay_responses_received = 1
+                    connection_stable_after_replay = True
                     
                 # Check transport status
                 transport = self.ssh_client.get_transport()
@@ -607,7 +607,7 @@ class SecurityTestSuite:
                 "original_packets_captured": len(packets_to_replay),
                 "packets_replayed": replayed_packets,
                 "ssh_connection_alive_after_replay": ssh_connection_alive,
-                "replay_responses_received": replay_responses_received,
+                "connection_stable_after_replay": connection_stable_after_replay,
                 "original_response": original_response
             }
             
