@@ -179,24 +179,34 @@ class SecurityTestSuite:
         try:
             # Load the SSH certificate
             with open(self.config.ssh_certificate_path, 'r') as cert_file:
-                cert_data = cert_file.read()
+                cert_data = cert_file.read().strip()
             
-            # Parse the SSH certificate
-            lines = cert_data.strip().split('\n')
-            if len(lines) < 2:
-                raise ValueError("Invalid SSH certificate format")
-            
-            # SSH certificates start with 'ssh-rsa-cert-v01@openssh.com' or similar
-            if not any(line.startswith('ssh-') and 'cert' in line for line in lines):
+            # SSH certificates are single-line format
+            if not cert_data.startswith('ssh-') or 'cert' not in cert_data:
                 raise ValueError("Not a valid SSH certificate")
             
-            # Load the certificate using paramiko
-            cert_key = paramiko.RSAKey(data=paramiko.py3compat.decodebytes(
-                base64.b64decode(lines[1])
-            ))
+            # Split the certificate line into parts
+            parts = cert_data.split()
+            if len(parts) < 2:
+                raise ValueError("Invalid SSH certificate format")
             
-            self.logger.info(f"Successfully loaded SSH certificate: {self.config.ssh_certificate_path}")
-            return cert_key
+            # The certificate type and data
+            cert_type = parts[0]
+            cert_data_b64 = parts[1]
+            
+            # Decode the certificate data
+            cert_data_bytes = base64.b64decode(cert_data_b64)
+            
+            # Create a certificate key using paramiko
+            # Note: This is a simplified approach - paramiko doesn't have direct SSH certificate support
+            # We'll try to use it as a regular key
+            try:
+                cert_key = paramiko.RSAKey(data=cert_data_bytes)
+                self.logger.info(f"Successfully loaded SSH certificate: {self.config.ssh_certificate_path}")
+                return cert_key
+            except Exception as cert_error:
+                self.logger.warning(f"Could not load certificate as key: {cert_error}")
+                return None
             
         except Exception as e:
             self.logger.error(f"Failed to load SSH certificate: {e}")
